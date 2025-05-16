@@ -59,7 +59,12 @@ async function createTransfertPDF(transfertData) {
       ["Date de prise en charge:", formatFrenchDate(transfertData.startDate)],
       ["Date de restitution:", formatFrenchDate(transfertData.endDate)],
       ["Type de carburant:", transfertData.carburant],
-      ["Frais de carburant:", transfertData.fuelFeesOn === "client" ? "À la charge du client" : "À la charge de l'entreprise"],
+      [
+        "Frais de carburant:",
+        transfertData.fuelFeesOn === "client"
+          ? "À la charge du client"
+          : "À la charge de l'entreprise",
+      ],
     ];
 
     transfertInfo.forEach(([label, value]) => {
@@ -206,13 +211,13 @@ exports.createTransfert = async (req, res) => {
     const transporter = nodemailer.createTransport({
       service: "gmail",
       auth: {
-        user: process.env.email,
-        pass: process.env.pass,
+        user: process.env.EMAIL_USERNAME,
+        pass: process.env.EMAIL_PASSWORD,
       },
     });
 
     await transporter.sendMail({
-      from: process.env.email,
+      from: process.env.EMAIL_USERNAME,
       to: email,
       subject: "Détails du transfert",
       text: `Bonjour ${firstName},\n\nVeuillez trouver ci-joint les détails de votre transfert.\n\nCordialement,\nL'équipe de location`,

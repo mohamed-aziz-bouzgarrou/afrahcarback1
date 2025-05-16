@@ -212,7 +212,7 @@ exports.createRenting = async (req, res) => {
 
     const newRenting = new Renting({
       ...req.body,
-      paymentStatus: paymentType === "online" ? "pending" : "paid",
+      paymentStatus: "pending",
     });
 
     await newRenting.save();

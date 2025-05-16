@@ -10,6 +10,8 @@ const {
   updateCarStatus,
   getCarsCollection,
   addRating,
+  manageCategoryForCar,
+  updateCategoryAvailability,
 } = require("../controllers/car");
 const authenticateToken = require("../middleware/authenticateToken");
 
@@ -30,6 +32,14 @@ router.get("/getcar/:id", getCar);
 
 // Update a car status by ID
 router.patch("/:id/status", authenticateToken, updateCarStatus);
+
+// Category management routes
+router.post("/:id/category", authenticateToken, manageCategoryForCar);
+router.patch(
+  "/:id/category/availability",
+  authenticateToken,
+  updateCategoryAvailability
+);
 
 // Update a car by ID
 router.patch("/edit/:id", authenticateToken, update);

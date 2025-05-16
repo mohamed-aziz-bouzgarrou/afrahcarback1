@@ -13,7 +13,7 @@ const {
 const authenticateToken = require("../middleware/authenticateToken");
 
 // Create a new renting
-router.post("/create", authenticateToken, createRenting);
+router.post("/create", createRenting);
 
 // Get all rentings
 router.get("/", authenticateToken, getAllRentings);

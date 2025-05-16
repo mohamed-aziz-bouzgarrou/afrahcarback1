@@ -22,7 +22,7 @@ exports.createCar = async (req, res) => {
         description,
         category,
         carType,
-        price,
+        //price,
         gear,
         fuel,
         doors,
@@ -30,6 +30,7 @@ exports.createCar = async (req, res) => {
         garantie,
         isNewCar,
         airConditionner,
+        categories,
       } = req.body;
 
       // Validate matricules array structure
@@ -50,13 +51,14 @@ exports.createCar = async (req, res) => {
 
       const images = req.files.map((file) => file.originalname);
 
+      // Create car with basic info
       const newCar = new Car({
         title,
         matricules, // Store array of matricules
         description,
-        category,
+        category, // For backward compatibility
         carType,
-        price,
+        // price, // For backward compatibility
         gear,
         fuel,
         doors,
@@ -66,6 +68,38 @@ exports.createCar = async (req, res) => {
         airConditionner,
         images,
       });
+
+      // Handle categories if provided
+      if (categories) {
+        try {
+          const parsedCategories = JSON.parse(categories);
+          if (Array.isArray(parsedCategories) && parsedCategories.length > 0) {
+            newCar.categories = parsedCategories.map((cat) => ({
+              type: cat.type,
+              price: cat.price,
+              available: cat.available !== undefined ? cat.available : true,
+            }));
+          }
+        } catch (e) {
+          // If categories parsing fails, create a default category based on legacy fields
+          newCar.categories = [
+            {
+              type: category,
+              price: price,
+              available: true,
+            },
+          ];
+        }
+      } else {
+        // Create a default category based on legacy fields
+        newCar.categories = [
+          {
+            type: category,
+            price: price,
+            available: true,
+          },
+        ];
+      }
 
       await newCar.save();
       res.status(201).json(newCar);
@@ -83,13 +117,89 @@ exports.createCar = async (req, res) => {
 exports.getCarsByCategory = async (req, res) => {
   const { category } = req.params;
   try {
-    const cars = await Car.find({ category });
-    if (!cars) {
-      return res.status(404).json({ message: "No cars not found" });
+    // Find cars that have this category in their categories array
+    // or match the legacy category field for backward compatibility
+    const cars = await Car.find({
+      $or: [
+        { category }, // Legacy field
+        { "categories.type": category, "categories.available": true }, // New structure
+      ],
+    });
+
+    if (!cars || cars.length === 0) {
+      return res
+        .status(404)
+        .json({ message: "No cars found for this category" });
     }
     res.status(200).json(cars);
   } catch (error) {
-    res.status(500).json({ message: "Error retrieving car", error });
+    res.status(500).json({ message: "Error retrieving cars", error });
+  }
+};
+
+// New endpoint to manage car categories
+exports.manageCategoryForCar = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { categoryType, price, available } = req.body;
+
+    if (!categoryType || typeof price !== "number") {
+      return res.status(400).json({
+        message:
+          "Category type and price are required. Price must be a number.",
+      });
+    }
+
+    const car = await Car.findById(id);
+    if (!car) {
+      return res.status(404).json({ message: "Car not found" });
+    }
+
+    // Ensure the car has the categories array initialized
+    await car.migrateToCategories();
+
+    // Add or update the category
+    await car.addCategory(
+      categoryType,
+      price,
+      available !== undefined ? available : true
+    );
+
+    res.status(200).json(car);
+  } catch (error) {
+    res.status(500).json({
+      message: "Error managing car category",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
+
+// Update category availability
+exports.updateCategoryAvailability = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { categoryType, available } = req.body;
+
+    if (!categoryType || typeof available !== "boolean") {
+      return res.status(400).json({
+        message: "Category type and availability status are required",
+      });
+    }
+
+    const car = await Car.findById(id);
+    if (!car) {
+      return res.status(404).json({ message: "Car not found" });
+    }
+
+    // Set availability for the specific category
+    await car.setCategoryAvailability(categoryType, available);
+
+    res.status(200).json(car);
+  } catch (error) {
+    res.status(500).json({
+      message: "Error updating category availability",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
   }
 };
 
@@ -133,7 +243,7 @@ exports.update = async (req, res) => {
         description,
         category,
         carType,
-        price,
+        //price,
         gear,
         fuel,
         doors,
@@ -142,14 +252,15 @@ exports.update = async (req, res) => {
         isNewCar,
         airConditionner,
         existingImages, // Add this to handle existing images
+        categories, // Add support for categories
       } = req.body;
 
       const updatedFields = {
         title,
         description,
-        category,
+        category, // Keep for backward compatibility
         carType,
-        price,
+        //price: price ? Number(price) : undefined, // Ensure price is a number for backward compatibility
         gear,
         fuel,
         doors,
@@ -181,6 +292,29 @@ exports.update = async (req, res) => {
         } catch (e) {
           return res.status(400).json({
             message: "Invalid matricules format. Must be a valid JSON array",
+          });
+        }
+      }
+
+      // Handle categories update if provided
+      if (categories) {
+        try {
+          const parsedCategories = JSON.parse(categories);
+          if (Array.isArray(parsedCategories)) {
+            updatedFields.categories = parsedCategories.map((cat) => ({
+              type: cat.type,
+              price: cat.price,
+              available: cat.available !== undefined ? cat.available : true,
+            }));
+          } else {
+            return res.status(400).json({
+              message:
+                "Invalid categories format. Expected array of { type: string, price: number, available: boolean }",
+            });
+          }
+        } catch (e) {
+          return res.status(400).json({
+            message: "Invalid categories format. Must be a valid JSON array",
           });
         }
       }
