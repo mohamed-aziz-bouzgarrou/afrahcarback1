@@ -1,7 +1,7 @@
 const Renting = require("../models/renting");
 const Car = require("../models/car");
-const nodemailer = require("nodemailer");
 const unavailability = require("../models/unavailability");
+const { sendEmail } = require("../utils/emailService");
 
 // Create a new renting
 const PDFDocument = require("pdfkit");
@@ -69,8 +69,12 @@ async function createRentalPDF(rentalData) {
       ["Date de Départ:", formatFrenchDate(rentalData.startDate)],
       ["Date de Retour:", formatFrenchDate(rentalData.endDate)],
       ["Siège Auto:", rentalData.siegeAuto ? "Oui" : "Non"],
-      ["Nombre Vol:", rentalData.numVol],
+      ["Nombre Vol:", rentalData.numVol || "Non spécifié"],
     ];
+
+    if (rentalData.assignedMatricule) {
+      vehicleInfo.push(["Matricule:", rentalData.assignedMatricule]);
+    }
 
     vehicleInfo.forEach(([label, value]) => {
       doc.font("Helvetica-Bold").text(label, 50, yPosition);
@@ -86,14 +90,54 @@ async function createRentalPDF(rentalData) {
       .text("DÉTAILS FINANCIERS:", 30, yPosition)
       .moveDown(0.5);
 
-    doc
-      .font("Helvetica")
-      .fontSize(12)
-      .text(`Prix Total: ${rentalData.totalPrice} DT`, 30, yPosition + 20);
-    doc
-      .font("Helvetica")
-      .fontSize(12)
-      .text(`Dépôt de garantie: ${rentalData.garantie} DT`, 30, yPosition + 40);
+    // Financial details with payment information
+    const financialInfo = [
+      ["Prix Total:", `${rentalData.totalPrice} DT`],
+      ["Dépôt de garantie:", `${rentalData.garantie} DT`],
+    ];
+
+    // Add payment type and status if available
+    if (rentalData.paymentType) {
+      financialInfo.push([
+        "Type de paiement:",
+        rentalData.paymentType === "online" ? "En ligne" : "Sur place",
+      ]);
+    }
+
+    if (rentalData.paymentStatus) {
+      let statusText = "";
+      switch (rentalData.paymentStatus) {
+        case "paid":
+          statusText = "Payé";
+          break;
+        case "partially_paid":
+          statusText = "Partiellement payé";
+          break;
+        case "pending":
+          statusText = "En attente";
+          break;
+        default:
+          statusText = rentalData.paymentStatus;
+      }
+      financialInfo.push(["Statut du paiement:", statusText]);
+    }
+
+    // Add payment percentage and paid amount if applicable
+    if (rentalData.paymentType === "online" && rentalData.paymentPercentage) {
+      financialInfo.push(["Pourcentage payé:", `${rentalData.paymentPercentage}%`]);
+    }
+
+    if (rentalData.paidAmount) {
+      financialInfo.push(["Montant payé:", `${rentalData.paidAmount} DT`]);
+    }
+
+    // Render financial information
+     let finYPosition = yPosition + 20;
+     financialInfo.forEach(([label, value]) => {
+      doc.font("Helvetica-Bold").fontSize(11).text(label, 50, finYPosition);
+      doc.font("Helvetica").fontSize(11).text(value, 200, finYPosition);
+      finYPosition += 20;
+    });
 
     // Footer
 
@@ -219,10 +263,25 @@ exports.createRenting = async (req, res) => {
 
     // ONLINE PAYMENT FLOW
     if (paymentType === "online") {
+      // Calculate amount to pay based on payment percentage
+      const paymentPercentage = req.body.paymentPercentage || 100;
+      const amountToPay = (totalPrice * paymentPercentage) / 100;
+
+      // Update the renting record with payment percentage and paid amount
+      newRenting.paymentPercentage = paymentPercentage;
+      newRenting.paidAmount = amountToPay;
+
+      // If partial payment, set status to partially_paid after successful payment
+      if (paymentPercentage < 100) {
+        newRenting.paymentStatus = "pending"; // Will be updated to partially_paid after payment
+      }
+
+      await newRenting.save();
+
       const payload = {
         userName: process.env.CLICTOPAY_USER,
         password: process.env.CLICTOPAY_PASSWORD,
-        amount: totalPrice * 1000, // in millimes
+        amount: amountToPay * 1000, // in millimes
         currency: 788,
         orderNumber: newRenting._id.toString(),
         returnUrl: process.env.CLICTOPAY_RETURN_URL,
@@ -277,28 +336,22 @@ exports.createRenting = async (req, res) => {
       siegeAuto,
       numVol,
       garantie: vehicleType.garantie,
+      paymentType,
+      paymentStatus: newRenting.paymentStatus,
+      assignedMatricule: newRenting.assignedMatricule,
     });
 
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        user: process.env.EMAIL_USERNAME,
-        pass: process.env.EMAIL_PASSWORD,
-      },
-    });
-
-    await transporter.sendMail({
-      from: process.env.EMAIL_USERNAME,
-      to: email,
-      subject: "Votre Contrat de Location",
-      text: `Bonjour ${firstName},\n\nVeuillez trouver ci-joint votre contrat de location.\n\nCordialement,\nL'équipe de location`,
-      attachments: [
+    await sendEmail(
+      email,
+      "Votre Contrat de Location",
+      `Bonjour ${firstName},\n\nVeuillez trouver ci-joint votre contrat de location.\n\nCordialement,\nL'équipe de location`,
+      [
         {
           filename: `Contrat_Location_${firstName}_${lastName}.pdf`,
           content: pdfBuffer,
         },
-      ],
-    });
+      ]
+    );
 
     res.status(201).json({
       success: true,
@@ -428,6 +481,16 @@ exports.getAllRentings = async (req, res) => {
 exports.getAvailableCars = async (req, res) => {
   try {
     const { startDate, endDate, category } = req.query;
+
+    if (!startDate || !endDate || !category) {
+      return res
+        .status(400)
+        .json({
+          message:
+            "Missing required parameters: startDate, endDate, and category are required",
+        });
+    }
+
     const start = new Date(startDate);
     const end = new Date(endDate);
 
@@ -435,10 +498,12 @@ exports.getAvailableCars = async (req, res) => {
       return res.status(400).json({ message: "Invalid date format" });
     }
 
-    // Get all cars in the category
+    // Get all cars in the category (checking both legacy field and new categories structure)
     const allCars = await Car.find({
-      category: category,
-      available: true,
+      $or: [
+        { category: category, available: true }, // Legacy field
+        { "categories.type": category, "categories.available": true }, // New structure
+      ],
     }).lean();
 
     // Find available cars with available matricules
@@ -459,6 +524,7 @@ exports.getAvailableCars = async (req, res) => {
             // Check for overlapping unavailabilities
             const unavailabilityConflict = await unavailability.exists({
               matricule: matricule.value,
+              car: car._id,
               $or: [
                 { startDate: { $lte: end }, endDate: { $gte: start } },
                 { startDate: { $gte: start, $lte: end } },
@@ -466,8 +532,19 @@ exports.getAvailableCars = async (req, res) => {
               ],
             });
 
+            // Check for built-in unavailable periods in the matricule object
+            const builtInUnavailability =
+              matricule.unavailablePeriods &&
+              matricule.unavailablePeriods.some((period) => {
+                const periodStart = new Date(period.startDate);
+                const periodEnd = new Date(period.endDate);
+                return periodStart <= end && periodEnd >= start;
+              });
+
             // Matricule is available if no conflicts
-            return !reservationConflict && !unavailabilityConflict
+            return !reservationConflict &&
+              !unavailabilityConflict &&
+              !builtInUnavailability
               ? matricule.value
               : null;
           })
@@ -630,6 +707,119 @@ exports.getCarsByMonth = async (req, res) => {
   }
 };
 
+exports.handlePaymentSuccess = async (req, res) => {
+  try {
+    const { orderNumber } = req.query;
+
+    if (!orderNumber) {
+      return res.status(400).json({ message: "Order number is required" });
+    }
+
+    const renting = await Renting.findById(orderNumber);
+
+    if (!renting) {
+      return res.status(404).json({ message: "Rental not found" });
+    }
+
+    // Calculate the amount that was just paid
+    let amountPaid;
+
+    // If this is a retry payment with a processing amount stored
+    if (renting.processingAmount) {
+      amountPaid = renting.processingAmount;
+      // Clear the processing amount
+      renting.processingAmount = undefined;
+    } else {
+      // Initial payment
+      amountPaid = renting.totalPrice * (renting.paymentPercentage / 100);
+    }
+
+    // For partially paid rentals that are completing payment
+    if (renting.paymentStatus === "partially_paid") {
+      // Add to existing paid amount
+      renting.paidAmount += amountPaid;
+    } else {
+      // Initial payment
+      renting.paidAmount = amountPaid;
+    }
+
+    // Update payment status based on paid amount vs total price
+    // Check if the full amount has been paid (accounting for small floating point differences)
+    if (Math.abs(renting.paidAmount - renting.totalPrice) < 0.01) {
+      renting.paymentStatus = "paid";
+    } else if (
+      renting.paidAmount > 0 &&
+      renting.paidAmount < renting.totalPrice
+    ) {
+      renting.paymentStatus = "partially_paid";
+    } else {
+      renting.paymentStatus = "pending";
+    }
+
+    await renting.save();
+
+    // Send confirmation email with contract
+    const vehicleType = await Car.findById(renting.carModel);
+
+    // Generate updated PDF with payment information
+
+    const pdfBuffer = await createRentalPDF({
+      firstName: renting.firstName,
+      lastName: renting.lastName,
+      email: renting.email,
+      address: renting.address,
+      phone: renting.phone,
+      age: renting.age,
+      city: renting.city,
+      title: vehicleType.title,
+      category: renting.category,
+      startDate: renting.startDate,
+      endDate: renting.endDate,
+      totalPrice: renting.totalPrice,
+      pickupLocation: renting.pickupLocation,
+      dropoffLocation: renting.dropoffLocation,
+      whatsapp: renting.whatsapp,
+      siegeAuto: renting.siegeAuto,
+      numVol: renting.numVol,
+      garantie: vehicleType.garantie,
+      paymentType: renting.paymentType,
+      paymentStatus: renting.paymentStatus,
+      paymentPercentage: renting.paymentPercentage,
+      paidAmount: renting.paidAmount,
+      assignedMatricule: renting.assignedMatricule
+    });
+
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.EMAIL_USERNAME,
+        pass: process.env.EMAIL_PASSWORD,
+      },
+    });
+
+    await transporter.sendMail({
+      from: process.env.EMAIL_USERNAME,
+      to: renting.email,
+      subject: "Confirmation de Paiement - Votre Contrat de Location",
+      text: `Bonjour ${renting.firstName},\n\nNous vous confirmons que votre paiement a été effectué avec succès. Veuillez trouver ci-joint votre contrat de location.\n\nCordialement,\nL'équipe de location`,
+      attachments: [
+        {
+          filename: `Contrat_Location_${renting.firstName}_${renting.lastName}.pdf`,
+          content: pdfBuffer,
+        },
+      ],
+    });
+
+    // Redirect to success page
+    res.redirect(
+      `${process.env.FRONTEND_URL}/payment-success?id=${orderNumber}`
+    );
+  } catch (error) {
+    console.error("Payment success error:", error);
+    res.redirect(`${process.env.FRONTEND_URL}/payment-error`);
+  }
+};
+
 exports.retryPayment = async (req, res) => {
   try {
     const { id } = req.params;
@@ -649,10 +839,24 @@ exports.retryPayment = async (req, res) => {
       return res.status(400).json({ message: "Rental already paid" });
     }
 
+    // For partially paid rentals, we'll process the remaining amount
+    // For failed or pending payments, we'll retry with the original percentage
+
+    // Calculate remaining amount to pay
+    const remainingAmount =
+      renting.paymentStatus === "partially_paid"
+        ? renting.totalPrice - renting.paidAmount
+        : renting.totalPrice * (renting.paymentPercentage / 100);
+
+    // Store the amount being processed in the session for later reference
+    // This will be used by the payment success handler
+    renting.processingAmount = remainingAmount;
+    await renting.save();
+
     const payload = {
       userName: process.env.CLICTOPAY_USER,
       password: process.env.CLICTOPAY_PASSWORD,
-      amount: renting.totalPrice * 1000,
+      amount: remainingAmount * 1000,
       currency: 788,
       orderNumber: renting._id.toString(),
       returnUrl: process.env.CLICTOPAY_RETURN_URL,

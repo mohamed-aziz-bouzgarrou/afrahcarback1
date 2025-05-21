@@ -131,7 +131,17 @@ exports.getCarsByCategory = async (req, res) => {
         .status(404)
         .json({ message: "No cars found for this category" });
     }
-    res.status(200).json(cars);
+
+    // Map through cars to ensure each has the correct price for the requested category
+    const carsWithCorrectPrice = cars.map((car) => {
+      const carObj = car.toObject();
+      // Use the getCategoryPrice method to get the correct price for this category
+      carObj.price = car.getCategoryPrice(category);
+      return carObj;
+    });
+    console.log(cars);
+    console.log(carsWithCorrectPrice);
+    res.status(200).json(carsWithCorrectPrice);
   } catch (error) {
     res.status(500).json({ message: "Error retrieving cars", error });
   }

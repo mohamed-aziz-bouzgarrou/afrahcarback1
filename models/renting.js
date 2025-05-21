@@ -30,10 +30,25 @@ const rentingSchema = new mongoose.Schema(
       type: String,
       enum: ["online", "onsite"],
       required: true,
+      default: "online",
+    },
+    paymentPercentage: {
+      type: Number,
+      enum: [30, 50, 100],
+      default: 100,
+      required: true,
+    },
+    paidAmount: {
+      type: Number,
+      default: 0,
+    },
+    processingAmount: {
+      type: Number,
+      default: undefined,
     },
     paymentStatus: {
       type: String,
-      enum: ["pending", "paid", "failed"],
+      enum: ["pending", "paid", "failed", "partially_paid"],
       default: "pending",
     },
   },

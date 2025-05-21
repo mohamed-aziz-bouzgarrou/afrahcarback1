@@ -1,6 +1,6 @@
 const Transfert = require("../models/transfert");
-const nodemailer = require("nodemailer");
 const PDFDocument = require("pdfkit");
+const { sendEmail } = require("../utils/emailService");
 
 async function createTransfertPDF(transfertData) {
   return new Promise((resolve) => {
@@ -208,26 +208,17 @@ exports.createTransfert = async (req, res) => {
       fuelFeesOn,
     });
 
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        user: process.env.EMAIL_USERNAME,
-        pass: process.env.EMAIL_PASSWORD,
-      },
-    });
-
-    await transporter.sendMail({
-      from: process.env.EMAIL_USERNAME,
-      to: email,
-      subject: "Détails du transfert",
-      text: `Bonjour ${firstName},\n\nVeuillez trouver ci-joint les détails de votre transfert.\n\nCordialement,\nL'équipe de location`,
-      attachments: [
+    await sendEmail(
+      email,
+      "Détails du transfert",
+      `Bonjour ${firstName},\n\nVeuillez trouver ci-joint les détails de votre transfert.\n\nCordialement,\nL'équipe de location`,
+      [
         {
           filename: `Contrat_Transfert_${firstName}_${lastName}.pdf`,
           content: pdfBuffer,
         },
-      ],
-    });
+      ]
+    );
 
     await newTransfert.save();
     res.status(201).json({
